@@ -103,7 +103,7 @@ function chunkText(text) {
 
 // ── 4. Embed a batch of texts via Voyage AI ──────────────────────────────────
 
-async function embedBatch(texts) {
+async function embedBatch(texts, retries = 5) {
   const res = await fetch('https://api.voyageai.com/v1/embeddings', {
     method: 'POST',
     headers: {
@@ -118,7 +118,16 @@ async function embedBatch(texts) {
   })
   const data = await res.json()
   if (data.error) throw new Error(`Voyage API: ${JSON.stringify(data.error)}`)
-  if (!data.data) throw new Error(`Voyage unexpected response: ${JSON.stringify(data)}`)
+  if (!data.data) {
+    // Rate limited — wait 65s and retry
+    if (retries > 0) {
+      process.stdout.write(` [rate limited, waiting 65s...]`)
+      await new Promise(r => setTimeout(r, 65_000))
+      lastEmbedCall = 0  // reset so next call goes immediately
+      return embedBatch(texts, retries - 1)
+    }
+    throw new Error(`Voyage unexpected response: ${JSON.stringify(data)}`)
+  }
   return data.data.map(d => d.embedding)
 }
 
