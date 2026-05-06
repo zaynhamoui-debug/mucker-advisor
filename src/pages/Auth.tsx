@@ -23,7 +23,13 @@ export default function Auth() {
         if (error) throw error
       } else if (mode === 'signup') {
         const { error } = await supabase.auth.signUp({ email, password })
-        if (error) throw error
+        if (error) {
+          if (error.message.toLowerCase().includes('already registered')) {
+            setMode('login')
+            throw new Error('You already have an account — sign in instead.')
+          }
+          throw error
+        }
         setNotice('Check your email for a confirmation link.')
       } else {
         const { error } = await supabase.auth.resetPasswordForEmail(email, {
