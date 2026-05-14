@@ -159,20 +159,24 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
   if (!message?.trim()) return res.status(400).json({ error: 'Missing message' })
 
   try {
-    // 1. Embed the question + a style-focused query in parallel with profile fetch
+    // 1. Fetch profile + content embedding in parallel
     const styleQuery = `let me give you my honest take on this as an investor who's seen a lot of companies`
 
-    const [profile, contentEmbedding, styleEmbedding] = await Promise.all([
+    const [profile, contentEmbedding] = await Promise.all([
       userId ? fetchFounderProfile(userId) : Promise.resolve(null),
       embed(message),
-      embed(styleQuery),
     ])
 
-    // 2. Dual retrieval: content (what Mucker said) + style (how Mucker talked)
-    const [contentChunks, styleChunks] = await Promise.all([
-      retrieveChunks(contentEmbedding, 6),
-      retrieveChunks(styleEmbedding, 3),
-    ])
+    // 2. Content retrieval first, then style embedding sequentially to respect rate limits
+    const contentChunks = await retrieveChunks(contentEmbedding, 6)
+
+    let styleChunks: Chunk[] = []
+    try {
+      const styleEmbedding = await embed(styleQuery)
+      styleChunks = await retrieveChunks(styleEmbedding, 3)
+    } catch {
+      // Style retrieval is best-effort — if rate limited, proceed without it
+    }
 
     // De-duplicate style chunks that overlap with content chunks
     const contentTexts = new Set(contentChunks.map(c => c.text))
