@@ -15,7 +15,7 @@ const STARTERS = [
   "How do I prioritize features when resources are tight?",
 ]
 
-export default function Chat({ user }: { user: User }) {
+export default function Chat({ user, onProfile }: { user: User; onProfile: () => void }) {
   const [messages, setMessages] = useState<Message[]>([])
   const [input, setInput]       = useState('')
   const [loading, setLoading]   = useState(false)
@@ -41,6 +41,7 @@ export default function Chat({ user }: { user: User }) {
         body: JSON.stringify({
           message: text.trim(),
           history: messages.map(m => ({ role: m.role, content: m.content })),
+          userId: user.id,
         }),
       })
 
@@ -110,8 +111,14 @@ export default function Chat({ user }: { user: User }) {
             <p className="text-xs text-white/40 mt-0.5">Ask a Mucker partner anything</p>
           </div>
         </div>
-        <div className="flex items-center gap-3">
+        <div className="flex items-center gap-2">
           <span className="text-xs text-white/30 hidden sm:block">{user.email}</span>
+          <button
+            onClick={onProfile}
+            className="text-xs text-white/40 hover:text-white border border-white/10 hover:border-white/20 rounded-lg px-3 py-1.5 transition-all"
+          >
+            My Company
+          </button>
           <button
             onClick={() => supabase.auth.signOut()}
             className="text-xs text-white/40 hover:text-white border border-white/10 hover:border-white/20 rounded-lg px-3 py-1.5 transition-all"
