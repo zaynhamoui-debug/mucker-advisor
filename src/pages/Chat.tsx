@@ -8,11 +8,11 @@ interface Message {
 }
 
 const STARTERS = [
-  "How do I know when I've found product-market fit?",
-  "What should my go-to-market look like at pre-seed?",
-  "How do I think about hiring my first sales person?",
-  "When should I raise my seed round?",
-  "How do I prioritize features when resources are tight?",
+  "I'm not sure if what I'm seeing is real traction or just noise — can you help me think through it?",
+  "I have a meeting with a potential customer tomorrow and I don't know how to pitch this yet.",
+  "We've been building for 3 months and haven't charged anyone. Is that a problem?",
+  "I keep getting told my market is too small. Am I thinking about this wrong?",
+  "I'm stuck between two very different directions for the product. Talk me through it?",
 ]
 
 export default function Chat({ user, onProfile }: { user: User; onProfile: () => void }) {
@@ -138,10 +138,10 @@ export default function Chat({ user, onProfile }: { user: User; onProfile: () =>
                 <span className="text-3xl">🎯</span>
               </div>
               <h2 className="text-xl font-semibold text-white mb-2">
-                What's on your mind, founder?
+                What's going on?
               </h2>
               <p className="text-white/40 text-sm mb-8 max-w-sm mx-auto">
-                Get straight-talk advice grounded in Mucker Capital's investment philosophy and years of founder experience.
+                Talk through whatever's on your mind. This isn't a search engine — just start the conversation.
               </p>
               <div className="flex flex-col gap-2">
                 {STARTERS.map(s => (
@@ -194,7 +194,7 @@ export default function Chat({ user, onProfile }: { user: User; onProfile: () =>
             value={input}
             onChange={e => setInput(e.target.value)}
             onKeyDown={handleKeyDown}
-            placeholder="Ask a question..."
+            placeholder="What's on your mind?"
             rows={1}
             className="flex-1 bg-white/5 border border-white/10 focus:border-amber-500/40 rounded-xl px-4 py-3 text-sm text-white placeholder-white/30 outline-none resize-none transition-colors"
             style={{ minHeight: '44px', maxHeight: '120px' }}
