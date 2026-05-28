@@ -1,5 +1,7 @@
 import { useState, useEffect, useRef } from 'react'
 import type { User } from '@supabase/supabase-js'
+import Papa from 'papaparse'
+import * as XLSX from 'xlsx'
 import { supabase } from '../lib/supabase'
 
 interface Profile {
@@ -31,7 +33,6 @@ const FIELDS: Array<{
   label: string
   placeholder: string
   multiline?: boolean
-  tip?: string
 }> = [
   { key: 'company_name',    label: 'Company Name',       placeholder: 'Acme Inc.' },
   { key: 'website',         label: 'Website',             placeholder: 'https://acme.com' },
@@ -46,12 +47,72 @@ const FIELDS: Array<{
   { key: 'extra_context',   label: 'Anything Else',       placeholder: 'Competitive landscape, previous pivots, co-founders, anything the advisor should know…', multiline: true },
 ]
 
+const ACCEPTED = '.csv,.xlsx,.xls,.txt,.tsv'
+
+function parseFile(file: File): Promise<string> {
+  return new Promise((resolve, reject) => {
+    const ext = file.name.split('.').pop()?.toLowerCase()
+
+    if (ext === 'csv' || ext === 'tsv') {
+      Papa.parse(file, {
+        header: true,
+        skipEmptyLines: true,
+        complete: (results) => {
+          const rows = results.data as Record<string, string>[]
+          if (rows.length === 0) return resolve('')
+          // Convert to readable key: value lines
+          const text = rows.map((row, i) =>
+            `Row ${i + 1}: ` + Object.entries(row).map(([k, v]) => `${k}: ${v}`).join(' | ')
+          ).join('\n')
+          resolve(`[${file.name}]\n${text}`)
+        },
+        error: reject,
+      })
+    } else if (ext === 'xlsx' || ext === 'xls') {
+      const reader = new FileReader()
+      reader.onload = (e) => {
+        try {
+          const wb = XLSX.read(e.target?.result, { type: 'binary' })
+          const sections: string[] = []
+          for (const sheetName of wb.SheetNames) {
+            const ws = wb.Sheets[sheetName]
+            const csv = XLSX.utils.sheet_to_csv(ws)
+            // Parse the CSV output
+            const rows = csv.split('\n').filter(r => r.trim() && r.replace(/,/g, '').trim())
+            if (rows.length > 0) {
+              sections.push(`[Sheet: ${sheetName}]\n${rows.join('\n')}`)
+            }
+          }
+          resolve(`[${file.name}]\n${sections.join('\n\n')}`)
+        } catch (err) {
+          reject(err)
+        }
+      }
+      reader.onerror = reject
+      reader.readAsBinaryString(file)
+    } else if (ext === 'txt' || ext === 'tsv') {
+      const reader = new FileReader()
+      reader.onload = (e) => resolve(`[${file.name}]\n${e.target?.result as string}`)
+      reader.onerror = reject
+      reader.readAsText(file)
+    } else {
+      reject(new Error(`Unsupported file type: .${ext}`))
+    }
+  })
+}
+
 export default function Profile({ user, onBack }: { user: User; onBack: () => void }) {
-  const [profile, setProfile] = useState<Profile>(EMPTY)
-  const [saved, setSaved]     = useState(false)
-  const [saving, setSaving]   = useState(false)
-  const [loaded, setLoaded]   = useState(false)
+  const [profile, setProfile]         = useState<Profile>(EMPTY)
+  const [saved, setSaved]             = useState(false)
+  const [saving, setSaving]           = useState(false)
+  const [loaded, setLoaded]           = useState(false)
+  const [fileNames, setFileNames]     = useState<string[]>([])
+  const [fileContext, setFileContext]  = useState<string>('')
+  const [fileError, setFileError]     = useState<string | null>(null)
+  const [fileParsing, setFileParsing] = useState(false)
+  const [dragging, setDragging]       = useState(false)
   const saveTimer = useRef<ReturnType<typeof setTimeout> | null>(null)
+  const fileInputRef = useRef<HTMLInputElement>(null)
 
   useEffect(() => {
     supabase
@@ -61,28 +122,76 @@ export default function Profile({ user, onBack }: { user: User; onBack: () => vo
       .single()
       .then(({ data }) => {
         if (data) {
-          const { id: _id, user_id: _uid, updated_at: _ua, ...rest } = data as Record<string, string>
-          setProfile({ ...EMPTY, ...rest })
+          const { id: _id, user_id: _uid, updated_at: _ua,
+                  file_context, file_names, ...rest } = data as Record<string, unknown>
+          setProfile({ ...EMPTY, ...(rest as Partial<Profile>) })
+          setFileContext((file_context as string) ?? '')
+          setFileNames((file_names as string[]) ?? [])
         }
         setLoaded(true)
       })
   }, [user.id])
 
   function handleChange(key: keyof Profile, value: string) {
-    setProfile(prev => ({ ...prev, [key]: value }))
+    const next = { ...profile, [key]: value }
+    setProfile(next)
     setSaved(false)
     if (saveTimer.current) clearTimeout(saveTimer.current)
-    saveTimer.current = setTimeout(() => autosave({ ...profile, [key]: value }), 800)
+    saveTimer.current = setTimeout(() => autosave(next, fileContext, fileNames), 800)
   }
 
-  async function autosave(data: Profile) {
+  async function autosave(data: Profile, fc: string, fn: string[]) {
     setSaving(true)
     await supabase.from('founder_profiles').upsert(
-      { user_id: user.id, ...data, updated_at: new Date().toISOString() },
+      { user_id: user.id, ...data, file_context: fc, file_names: fn, updated_at: new Date().toISOString() },
       { onConflict: 'user_id' }
     )
     setSaving(false)
     setSaved(true)
+  }
+
+  async function handleFiles(files: FileList | null) {
+    if (!files || files.length === 0) return
+    setFileError(null)
+    setFileParsing(true)
+
+    const newTexts: string[] = []
+    const newNames: string[] = [...fileNames]
+
+    for (const file of Array.from(files)) {
+      if (file.size > 5 * 1024 * 1024) {
+        setFileError(`${file.name} is too large (max 5MB)`)
+        continue
+      }
+      try {
+        const text = await parseFile(file)
+        newTexts.push(text)
+        if (!newNames.includes(file.name)) newNames.push(file.name)
+      } catch {
+        setFileError(`Could not parse ${file.name}`)
+      }
+    }
+
+    const combined = [fileContext, ...newTexts].filter(Boolean).join('\n\n')
+    // Cap at ~20k chars to stay within context limits
+    const capped = combined.length > 20000 ? combined.slice(0, 20000) + '\n[truncated]' : combined
+
+    setFileContext(capped)
+    setFileNames(newNames)
+    setFileParsing(false)
+    setSaved(false)
+    autosave(profile, capped, newNames)
+  }
+
+  function removeFile(name: string) {
+    const next = fileNames.filter(n => n !== name)
+    // Rebuild context without that file's section
+    const sections = fileContext.split(/\n(?=\[)/)
+    const filtered = sections.filter(s => !s.startsWith(`[${name}]`)).join('\n\n')
+    setFileNames(next)
+    setFileContext(filtered)
+    setSaved(false)
+    autosave(profile, filtered, next)
   }
 
   if (!loaded) {
@@ -197,6 +306,72 @@ export default function Profile({ user, onBack }: { user: User; onBack: () => vo
               )}
             </div>
           ))}
+
+          {/* File upload */}
+          <div>
+            <label className="block text-xs text-white/40 uppercase tracking-widest mb-3">
+              Upload Data Files
+            </label>
+            <p className="text-xs text-white/30 mb-3">
+              Financials, cap table, customer data, pitch deck exports — anything with numbers or context the advisor should know. CSV, Excel, or plain text.
+            </p>
+
+            {/* Drop zone */}
+            <div
+              onDragOver={e => { e.preventDefault(); setDragging(true) }}
+              onDragLeave={() => setDragging(false)}
+              onDrop={e => { e.preventDefault(); setDragging(false); handleFiles(e.dataTransfer.files) }}
+              onClick={() => fileInputRef.current?.click()}
+              className={`border-2 border-dashed rounded-xl px-6 py-8 text-center cursor-pointer transition-all ${
+                dragging
+                  ? 'border-amber-500/50 bg-amber-500/5'
+                  : 'border-white/10 hover:border-white/20 hover:bg-white/5'
+              }`}
+            >
+              {fileParsing ? (
+                <p className="text-sm text-white/40">Parsing file…</p>
+              ) : (
+                <>
+                  <p className="text-2xl mb-2">📂</p>
+                  <p className="text-sm text-white/50">Drop files here or click to upload</p>
+                  <p className="text-xs text-white/25 mt-1">.csv  .xlsx  .xls  .txt — max 5MB each</p>
+                </>
+              )}
+            </div>
+
+            <input
+              ref={fileInputRef}
+              type="file"
+              accept={ACCEPTED}
+              multiple
+              className="hidden"
+              onChange={e => handleFiles(e.target.files)}
+            />
+
+            {fileError && (
+              <p className="text-xs text-red-400 mt-2">{fileError}</p>
+            )}
+
+            {/* Uploaded files list */}
+            {fileNames.length > 0 && (
+              <div className="mt-3 flex flex-col gap-2">
+                {fileNames.map(name => (
+                  <div key={name} className="flex items-center justify-between bg-white/5 border border-white/10 rounded-lg px-3 py-2">
+                    <span className="text-xs text-white/60 font-mono truncate">{name}</span>
+                    <button
+                      onClick={() => removeFile(name)}
+                      className="text-xs text-white/30 hover:text-red-400 transition-colors ml-3 shrink-0"
+                    >
+                      Remove
+                    </button>
+                  </div>
+                ))}
+                <p className="text-xs text-white/25 mt-1">
+                  {Math.round(fileContext.length / 1000)}k characters extracted · used as context in every chat
+                </p>
+              </div>
+            )}
+          </div>
 
           <div className="pb-8" />
         </div>

@@ -1,6 +1,7 @@
 import type { VercelRequest, VercelResponse } from '@vercel/node'
 import { createClient } from '@supabase/supabase-js'
 import Anthropic from '@anthropic-ai/sdk'
+import { PERSONA_PROMPTS } from './_personas.js'
 
 const supabase = createClient(
   process.env.SUPABASE_URL ?? '',
@@ -9,76 +10,15 @@ const supabase = createClient(
 
 const anthropic = new Anthropic({ apiKey: process.env.ANTHROPIC_API_KEY ?? '' })
 
-// ─── System prompt ────────────────────────────────────────────────────────────
+// ─── Build system prompt with persona + founder profile ───────────────────────
 
-const BASE_SYSTEM_PROMPT = `You are a partner at Mucker Capital. You're talking 1-on-1 with a founder — not presenting, not writing, just talking.
+function buildSystemPrompt(
+  personaId: string,
+  profile: Record<string, string> | null,
+): string {
+  const base = PERSONA_PROMPTS[personaId] ?? PERSONA_PROMPTS['partner']
 
-Your entire way of speaking comes from how Mucker partners actually talk in their content. Below are real examples pulled directly from Mucker videos. Study them. Match this exact register, rhythm, and vocabulary — not Claude's default voice, not a consultant's voice, this voice.
-
----
-
-REAL MUCKER SPEECH — THIS IS HOW YOU TALK:
-
-"And frankly, whether it keeps up with your own expectations — if your product velocity is not where it needs to be, you are not going to find success in my opinion. I think it's worth stopping now and correcting that issue."
-
-"The lesson for me really is: it's really important to be in the right place at the right time. Skate to where the puck is going, as I say. But it's also important to be patient — because sometimes that's just how long it takes."
-
-"I'll give my two cents. This is a very hard question. The short version of my answer is that you need to manufacture traction. Don't waste time working on a pitch deck if you don't have traction to prove it's already working. Okay, so what does that mean?"
-
-"So instead of showing that you've got revenue moving up to the right, talk about a result of the value that you're providing — or the problem you're solving — maybe for one or two design partners. Design partners being early alpha users where you said, 'Hey, why don't you test out our product? You can even provide it for free, right?' At that stage, we just want to know you're able to solve for a problem."
-
-"You could start showcasing traction in that way and say look — we've got five conversations going, we're in five different pilot programs with similar types of customers."
-
-"I say it doesn't work. And then somebody says, 'no, it definitely works.' And then I say, 'well, would you please give me a specific example that proves that?' And either the answer is, 'oh sorry, I don't have one' — or they give me the one exception that proves the rule."
-
-"I would definitely ask 'how did you hear about us?' so that you know what's actually working. Almost none of those people said they came from LinkedIn — but it did have value, and I only know that by asking."
-
-"LOIs are non-binding. Just because someone signed an LOI does not mean they're legally bound to go and purchase. So, sure, it's a potentially interesting signal — but don't count it as closed."
-
-"The question you should be asking isn't how do I get more users. It's why are the users I have staying. Those are very different problems."
-
-"None of us get it right the first time — that's the whole point. The getting to the right answer, in terms of whatever you're releasing or whatever you're trying to solve, requires rapid iteration. The companies I've seen succeed are the ones that can move fast enough to find it."
-
----
-
-PATTERNS FROM THOSE EXAMPLES — USE THESE:
-- Start direct points with "Look," or "So,"
-- Use "right?" as a casual check-in mid-thought, not at the end of a formal question
-- Say "okay" as a natural transition between thoughts
-- Say "I think" before opinions, not before facts
-- Use "frankly" when being direct about something uncomfortable
-- When listing two things: "There are really two things here. One is X. The other — and this is the one people miss — is Y."
-- End challenges with a specific, concrete ask — not a vague suggestion
-
----
-
-CONVERSATION RULES:
-
-If the situation isn't clear enough to give specific advice, ask the ONE most important question. Just one.
-
-Pick one mode per response:
-- If they hit a milestone: acknowledge it genuinely, then push to what's next
-- If they're avoiding the hard thing: name it directly
-- If they're stuck on a decision: help them reason through it, don't just give the answer
-- If the conversation has landed: give 1-3 concrete next steps, specific not vague
-
-Keep it short. 2-4 paragraphs. The goal is their next message, not a complete answer.
-End with a question, a challenge, or a next step. Never just stop.
-
----
-
-MUCKER'S ACTUAL BELIEFS — WEAVE IN NATURALLY:
-- Find someone willing to pay before building more
-- One customer isn't PMF — can you do it again without heroics?
-- Capital efficiency is survival, especially outside SF
-- Most founders are building features when they should be talking to customers
-- Retention tells you everything the roadmap doesn't
-- "Why now" matters more than "why us" — timing is the thing you can't manufacture`
-
-// ─── Build system prompt with founder profile ─────────────────────────────────
-
-function buildSystemPrompt(profile: Record<string, string> | null): string {
-  if (!profile) return BASE_SYSTEM_PROMPT
+  if (!profile) return base
 
   const lines: string[] = []
   if (profile.company_name)    lines.push(`Company: ${profile.company_name}`)
@@ -95,16 +35,19 @@ function buildSystemPrompt(profile: Record<string, string> | null): string {
   if (profile.challenges)      lines.push(`Current challenges: ${profile.challenges}`)
   if (profile.extra_context)   lines.push(`Additional context: ${profile.extra_context}`)
 
-  if (lines.length === 0) return BASE_SYSTEM_PROMPT
+  if (lines.length === 0 && !profile.file_context) return base
 
-  return `${BASE_SYSTEM_PROMPT}
+  const profileSection = lines.length > 0
+    ? `WHAT YOU ALREADY KNOW ABOUT THIS FOUNDER (never ask them to repeat this — use it to make every answer specific):\n${lines.join('\n')}\n\nUse this actively. Generic advice is a waste of their time.`
+    : ''
 
----
+  const fileSection = profile.file_context
+    ? `UPLOADED DATA FILES (financials, cap table, customer data, etc. — reference specific numbers when relevant):\n${profile.file_context}`
+    : ''
 
-WHAT YOU ALREADY KNOW ABOUT THIS FOUNDER (never ask them to repeat this — use it to make every answer specific):
-${lines.join('\n')}
+  const sections = [profileSection, fileSection].filter(Boolean).join('\n\n---\n\n')
 
-Use this actively. Generic advice is a waste of their time.`
+  return `${base}\n\n---\n\n${sections}`
 }
 
 // ─── Embedding ────────────────────────────────────────────────────────────────
@@ -152,10 +95,11 @@ async function retrieveChunks(embedding: number[], count: number): Promise<Chunk
 export default async function handler(req: VercelRequest, res: VercelResponse) {
   if (req.method !== 'POST') return res.status(405).json({ error: 'Method not allowed' })
 
-  const { message, history = [], userId } = req.body as {
+  const { message, history = [], userId, personaId = 'partner' } = req.body as {
     message: string
     history: Array<{ role: 'user' | 'assistant'; content: string }>
     userId?: string
+    personaId?: string
   }
 
   if (!message?.trim()) return res.status(400).json({ error: 'Missing message' })
@@ -217,7 +161,7 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
     const stream = anthropic.messages.stream({
       model: 'claude-sonnet-4-6',
       max_tokens: 600,
-      system: buildSystemPrompt(profile),
+      system: buildSystemPrompt(personaId, profile),
       messages,
     })
 
